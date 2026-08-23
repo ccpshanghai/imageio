@@ -111,6 +111,17 @@ enum PixelFormat
 	PIXEL_FORMAT_BC7_UNORM = 98,
 	PIXEL_FORMAT_BC7_UNORM_SRGB = 99,
 
+	// ASTC (M3, spec §7.2): block-compressed formats the Metal backends sample natively.
+	// KTX2 carries ASTC block payloads; DDS cannot. Block size is part of the format name
+	// (ASTC 4x4/6x6/8x8). No ASTC 3D block compression (VK_EXT_texture_compression_astc_3d):
+	// zero devices expose it (parent spec's ruling).
+	PIXEL_FORMAT_ASTC_4x4_UNORM = 100,
+	PIXEL_FORMAT_ASTC_4x4_UNORM_SRGB = 101,
+	PIXEL_FORMAT_ASTC_6x6_UNORM = 102,
+	PIXEL_FORMAT_ASTC_6x6_UNORM_SRGB = 103,
+	PIXEL_FORMAT_ASTC_8x8_UNORM = 104,
+	PIXEL_FORMAT_ASTC_8x8_UNORM_SRGB = 105,
+
 	PIXEL_FORMAT_SENTINEL,
 
 	PIXEL_FORMAT_FORCE_UINT = 0xffffffff
@@ -141,6 +152,12 @@ inline bool IsCompressedFormat( PixelFormat format )
 	case PIXEL_FORMAT_BC7_TYPELESS:
 	case PIXEL_FORMAT_BC7_UNORM:
 	case PIXEL_FORMAT_BC7_UNORM_SRGB:
+	case PIXEL_FORMAT_ASTC_4x4_UNORM:
+	case PIXEL_FORMAT_ASTC_4x4_UNORM_SRGB:
+	case PIXEL_FORMAT_ASTC_6x6_UNORM:
+	case PIXEL_FORMAT_ASTC_6x6_UNORM_SRGB:
+	case PIXEL_FORMAT_ASTC_8x8_UNORM:
+	case PIXEL_FORMAT_ASTC_8x8_UNORM_SRGB:
 		return true;
 
 	default:
@@ -192,6 +209,12 @@ inline uint32_t GetBlockByteSize( PixelFormat format )
 	case PIXEL_FORMAT_BC7_TYPELESS:
 	case PIXEL_FORMAT_BC7_UNORM:
 	case PIXEL_FORMAT_BC7_UNORM_SRGB:
+	case PIXEL_FORMAT_ASTC_4x4_UNORM:
+	case PIXEL_FORMAT_ASTC_4x4_UNORM_SRGB:
+	case PIXEL_FORMAT_ASTC_6x6_UNORM:
+	case PIXEL_FORMAT_ASTC_6x6_UNORM_SRGB:
+	case PIXEL_FORMAT_ASTC_8x8_UNORM:
+	case PIXEL_FORMAT_ASTC_8x8_UNORM_SRGB:
 		return 16;
 
 	default:
