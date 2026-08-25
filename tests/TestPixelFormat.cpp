@@ -98,3 +98,68 @@ TEST( PixelFormat, EveryCompressedFormatHasABlockExtentAboveOne )
 		EXPECT_NE( 0u, GetBlockByteSize( format ) ) << "format " << i;
 	}
 }
+
+// BitmapDimensions is where the block geometry actually gets used, and where the 4x4 assumption
+// was written three more times -- as `/ 4u` in GetMipPitch, as `/ 16` in GetMipSize, and as `/ 4`
+// in GetMipNumRows. Two bugs shared those expressions: the footprint, and the truncation.
+
+TEST( BitmapDimensionsBlockGeometry, ACompressedMipSmallerThanItsBlockIsStillOneBlock )
+{
+	// This is the truncation half, and it was wrong for BC too -- not just for ASTC. Every mip
+	// chain ends at 1x1, where `width / 4` is 0: the old GetMipPitch returned a pitch of zero,
+	// and GetMipSize computed 2*2*1/16*8 = 0 for the 2x2 level as well.
+	const BitmapDimensions bc1( TEX_TYPE_2D, PIXEL_FORMAT_BC1_UNORM, 16, 16, 1, 5 );
+
+	EXPECT_EQ( 8u, bc1.GetMipPitch( 4 ) ) << "1x1 mip is one 8-byte BC1 block";
+	EXPECT_EQ( 1u, bc1.GetMipNumRows( 4 ) );
+	EXPECT_EQ( 8u, bc1.GetMipSize( 4 ) );
+	EXPECT_EQ( 8u, bc1.GetMipSize( 3 ) ) << "2x2 mip is one block, not zero bytes";
+}
+
+TEST( BitmapDimensionsBlockGeometry, AFourByFourFormatIsUnchanged )
+{
+	// The regression guard: whatever ASTC needed must not have moved BC. 16x16 BC1 is 4x4 blocks
+	// of 8 bytes; 12x8 BC7 is 3x2 blocks of 16.
+	const BitmapDimensions bc1( TEX_TYPE_2D, PIXEL_FORMAT_BC1_UNORM, 16, 16, 1, 5 );
+	EXPECT_EQ( 4u * 8u, bc1.GetMipPitch( 0 ) );
+	EXPECT_EQ( 4u, bc1.GetMipNumRows( 0 ) );
+	EXPECT_EQ( 4u * 4u * 8u, bc1.GetMipSize( 0 ) );
+
+	const BitmapDimensions bc7( TEX_TYPE_2D, PIXEL_FORMAT_BC7_UNORM, 12, 8, 1, 1 );
+	EXPECT_EQ( 3u * 16u, bc7.GetMipPitch( 0 ) );
+	EXPECT_EQ( 2u, bc7.GetMipNumRows( 0 ) );
+	EXPECT_EQ( 3u * 2u * 16u, bc7.GetMipSize( 0 ) );
+}
+
+TEST( BitmapDimensionsBlockGeometry, AstcSixBySixIsTheCaseTheOldFormCouldNotExpress )
+{
+	// 48 texels of 6x6 is 8 blocks. `48 / 4` said 12, so the pitch was half again too large and
+	// every row after the first read from the wrong offset.
+	const BitmapDimensions astc( TEX_TYPE_2D, PIXEL_FORMAT_ASTC_6x6_UNORM, 48, 36, 1, 1 );
+	EXPECT_EQ( 8u * 16u, astc.GetMipPitch( 0 ) );
+	EXPECT_EQ( 6u, astc.GetMipNumRows( 0 ) );
+	EXPECT_EQ( 8u * 6u * 16u, astc.GetMipSize( 0 ) );
+
+	// And a size that is not a multiple of 6 rounds up on both axes.
+	const BitmapDimensions odd( TEX_TYPE_2D, PIXEL_FORMAT_ASTC_6x6_UNORM, 50, 50, 1, 1 );
+	EXPECT_EQ( 9u * 16u, odd.GetMipPitch( 0 ) );
+	EXPECT_EQ( 9u, odd.GetMipNumRows( 0 ) );
+}
+
+TEST( BitmapDimensionsBlockGeometry, AstcEightByEight )
+{
+	const BitmapDimensions astc( TEX_TYPE_2D, PIXEL_FORMAT_ASTC_8x8_UNORM, 64, 64, 1, 1 );
+	EXPECT_EQ( 8u * 16u, astc.GetMipPitch( 0 ) );
+	EXPECT_EQ( 8u, astc.GetMipNumRows( 0 ) );
+	EXPECT_EQ( 8u * 8u * 16u, astc.GetMipSize( 0 ) );
+}
+
+TEST( BitmapDimensionsBlockGeometry, AnUncompressedFormatStillCountsTexelRows )
+{
+	// GetMipNumRows lost its branch -- GetBlockHeight is 1 for uncompressed, so the block form is
+	// an identity there. This is the assertion that says so rather than trusting it.
+	const BitmapDimensions rgba( TEX_TYPE_2D, PIXEL_FORMAT_B8G8R8A8_UNORM, 5, 12, 1, 1 );
+	EXPECT_EQ( 5u * 4u, rgba.GetMipPitch( 0 ) );
+	EXPECT_EQ( 12u, rgba.GetMipNumRows( 0 ) );
+	EXPECT_EQ( 5u * 12u * 4u, rgba.GetMipSize( 0 ) );
+}
