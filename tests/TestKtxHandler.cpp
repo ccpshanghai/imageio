@@ -202,3 +202,69 @@ TEST( KtxHandler, SavingRefusesWhatReadingWouldRefuse )
 	ASSERT_TRUE( astc.Create( 16, 16, 1, PIXEL_FORMAT_ASTC_6x6_UNORM ) );
 	EXPECT_EQ( Result::OK, Ktx::IsSaveSupported( astc ).code );
 }
+
+TEST( KtxHandler, ReadsAChainWhoseLevelSizesAreStatedIndependently )
+{
+	// AssertRoundTrips above cannot catch a wrong block count, and this is the test that says so.
+	// It writes through SaveImage and sizes every level with GetMipSize -- the same function the
+	// reader validates against -- so a writer and a reader that are wrong in the same way agree
+	// perfectly. The staging tool is the third party that disagreed: it counts blocks from the
+	// footprint, wrote a 24x24 6x6 chain, and the handler rejected level 2 as 16 bytes where 64
+	// were "needed" -- because GetMipWidth padded a 6-texel mip up to 8, four being the only
+	// block width the expression knew.
+	//
+	// So the sizes here are literals, derived on paper: 24 texels is ceil(24/6) = 4 blocks, and
+	// every ASTC block is 16 bytes regardless of footprint. 4x4, 2x2, then 1x1 three times over,
+	// because a mip smaller than one block still occupies one.
+	const uint32_t width = 24, height = 24, levelCount = 5;
+	const uint32_t sizes[levelCount] = { 4 * 4 * 16, 2 * 2 * 16, 16, 16, 16 };
+
+	std::vector<uint8_t> bytes( 80 + 24 * levelCount, 0 );
+	const uint8_t identifier[12] = { 0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A };
+	memcpy( bytes.data(), identifier, sizeof( identifier ) );
+	auto word = [&]( size_t offset, uint32_t value ) { memcpy( bytes.data() + offset, &value, 4 ); };
+	word( 12, 165 );  // VK_FORMAT_ASTC_6x6_UNORM_BLOCK
+	word( 16, 1 );
+	word( 20, width );
+	word( 24, height );
+	word( 36, 1 );  // faceCount
+	word( 40, levelCount );
+
+	// Smallest level first in the file, largest first in the index -- the container's own
+	// ordering, spelled out here rather than borrowed from the writer.
+	uint64_t offset = bytes.size();
+	std::vector<uint64_t> offsets( levelCount );
+	for( uint32_t level = levelCount; level-- > 0; )
+	{
+		offsets[level] = offset;
+		offset += sizes[level];
+	}
+	for( uint32_t level = 0; level < levelCount; ++level )
+	{
+		const uint64_t length = sizes[level];
+		memcpy( bytes.data() + 80 + 24 * level, &offsets[level], 8 );
+		memcpy( bytes.data() + 80 + 24 * level + 8, &length, 8 );
+		memcpy( bytes.data() + 80 + 24 * level + 16, &length, 8 );
+	}
+	// A distinct byte per level, so a level read from the wrong offset is visible.
+	for( uint32_t level = levelCount; level-- > 0; )
+	{
+		bytes.insert( bytes.end(), sizes[level], uint8_t( 0x10 + level ) );
+	}
+
+	HostBitmap bitmap;
+	ReadMemoryStream in( bytes.data(), bytes.size() );
+	const Result result = Ktx::ReadImage( in, LoadParameters( L"independent.ktx2" ), bitmap, nullptr );
+	ASSERT_EQ( Result::OK, result.code ) << result.GetErrorMessage();
+
+	EXPECT_EQ( PIXEL_FORMAT_ASTC_6x6_UNORM, bitmap.GetFormat() );
+	EXPECT_EQ( width, bitmap.GetWidth() );
+	EXPECT_EQ( height, bitmap.GetHeight() );
+	ASSERT_EQ( levelCount, bitmap.GetTrueMipCount() );
+	for( uint32_t level = 0; level < levelCount; ++level )
+	{
+		EXPECT_EQ( sizes[level], bitmap.GetMipSize( level ) ) << "level " << level;
+		EXPECT_EQ( uint8_t( 0x10 + level ),
+			*reinterpret_cast<const uint8_t*>( bitmap.GetMipRawData( level ) ) ) << "level " << level;
+	}
+}

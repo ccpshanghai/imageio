@@ -203,7 +203,16 @@ inline uint32_t BitmapDimensions::GetMipWidth( uint32_t level ) const
 
 	if( IsCompressed() )
 	{
-		return std::max( ( ( m_width >> level ) + 3u ) & ~3u, 4u );
+		// Rounded up to a whole block, and the block is the format's, not four.
+		//
+		// `(x + 3) & ~3` with a floor of 4 was 4x4 written as arithmetic. It is exactly
+		// ceil(x/4)*4, so for every BC format this expression is the same number it always
+		// was -- but for ASTC 6x6 it turned a 6-texel mip into 8, which GetMipSize below
+		// then charged two blocks for instead of one, and the KTX2 handler's byte-length
+		// check rejected the file. A power-of-two chain hides it: 6 only appears when the
+		// base is not a power of two.
+		const uint32_t block = GetBlockWidth( m_format );
+		return std::max( GetBlockCount( m_width >> level, block ) * block, block );
 	}
 
 	return std::max( m_width >> level, 1u );
@@ -218,7 +227,16 @@ inline uint32_t BitmapDimensions::GetMipHeight( uint32_t level ) const
 
 	if( IsCompressed() )
 	{
-		return std::max( ( ( m_height >> level ) + 3u ) & ~3u, 4u );
+		// Rounded up to a whole block, and the block is the format's, not four.
+		//
+		// `(x + 3) & ~3` with a floor of 4 was 4x4 written as arithmetic. It is exactly
+		// ceil(x/4)*4, so for every BC format this expression is the same number it always
+		// was -- but for ASTC 6x6 it turned a 6-texel mip into 8, which GetMipSize below
+		// then charged two blocks for instead of one, and the KTX2 handler's byte-length
+		// check rejected the file. A power-of-two chain hides it: 6 only appears when the
+		// base is not a power of two.
+		const uint32_t block = GetBlockHeight( m_format );
+		return std::max( GetBlockCount( m_height >> level, block ) * block, block );
 	}
 
 	return std::max( m_height >> level, 1u );

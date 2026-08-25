@@ -185,3 +185,36 @@ TEST( PixelFormat, IsAstcFormatSeparatesTheTwoBlockFamilies )
 		EXPECT_FALSE( IsAstcFormat( format ) ) << "format " << int( format );
 	}
 }
+
+
+TEST( BitmapDimensionsBlockGeometry, AstcSixBySixMipChainOfANonPowerOfTwo )
+{
+	// 24 is four 6x6 blocks, and its chain is 24, 12, 6, 3, 1 -- so level 2 is exactly one
+	// block wide. GetMipWidth used to pad that 6 up to 8 (four, not the format's block), and
+	// GetMipSize then charged two blocks for it: 64 bytes where the file holds 16. A
+	// power-of-two base never produces a 6, which is why the whole 1024x1024 hull set passed
+	// while this was broken.
+	const BitmapDimensions astc( TEX_TYPE_2D, PIXEL_FORMAT_ASTC_6x6_UNORM_SRGB, 24, 24, 1, 5 );
+	const uint32_t blocks[] = { 4, 2, 1, 1, 1 };
+	for( uint32_t level = 0; level < 5; ++level )
+	{
+		EXPECT_EQ( blocks[level] * 16u, astc.GetMipPitch( level ) ) << "level " << level;
+		EXPECT_EQ( blocks[level], astc.GetMipNumRows( level ) ) << "level " << level;
+		EXPECT_EQ( blocks[level] * blocks[level] * 16u, astc.GetMipSize( level ) ) << "level " << level;
+	}
+}
+
+TEST( BitmapDimensionsBlockGeometry, TheBlockRoundingIsUnchangedForAFourByFourFormat )
+{
+	// The claim the fix above rests on, as an assertion rather than a comment: ceil(x/4)*4 with
+	// a floor of 4 IS `(x + 3) & ~3` with a floor of 4, so every BC format reports exactly the
+	// numbers it reported before the block extent entered the expression. Widths chosen to cover
+	// every residue mod 4 and the tail of a chain, where the floor is what answers.
+	for( uint32_t width : { 1u, 2u, 3u, 4u, 5u, 7u, 8u, 17u, 24u, 33u, 256u } )
+	{
+		const BitmapDimensions bc( TEX_TYPE_2D, PIXEL_FORMAT_BC1_UNORM, width, width, 1, 1 );
+		const uint32_t legacy = std::max( ( width + 3u ) & ~3u, 4u );
+		EXPECT_EQ( legacy, bc.GetMipWidth( 0 ) ) << "width " << width;
+		EXPECT_EQ( legacy, bc.GetMipHeight( 0 ) ) << "width " << width;
+	}
+}
