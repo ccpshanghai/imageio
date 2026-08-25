@@ -223,6 +223,107 @@ inline uint32_t GetBlockByteSize( PixelFormat format )
 	};
 }
 
+// The block's footprint in texels: how many texels wide and tall one compressed block covers.
+//
+// This is the half of a block format's geometry that GetBlockByteSize does not carry, and it did
+// not need to exist until ASTC. Every BC format is 4x4, so for fourteen formats the answer was a
+// constant and callers wrote it in by hand -- `width / 4`, `( width + 3 ) / 4`, or a local
+// `const unsigned blockPixelSize = 4`. ASTC 4x4 keeps that correct and 6x6 and 8x8 do not: a
+// 48-wide 6x6 image has 8 blocks per row, and `48 / 4` says 12. Getting it wrong gives a row
+// pitch 1.5x or 2x too large -- garbled or over-read texels rather than a clean failure.
+//
+// The row pitch of a block image is
+//     GetBlockCount( width, GetBlockExtent( f ).width ) * GetBlockByteSize( f )
+// and the number of block rows is the same expression on height.
+//
+// The footprint does NOT follow from the byte size, which is why this cannot be folded into
+// GetBlockByteSize: ASTC is 16 bytes at every footprint -- 6x6 stores 36 texels in the same 128
+// bits that 4x4 uses for 16, which is the entire point of choosing a larger block.
+//
+// **{ 1, 1 } for a format that is not block compressed**, deliberately unlike GetBlockByteSize's
+// 0. It makes the expression above degrade to `width * bytesPerPixel` with no branch, and it
+// cannot divide by zero; 0 there is a sentinel for "not a block image", which IsCompressedFormat
+// already answers.
+//
+// Every format is listed, with no compressed fallback. A new block format added to the enum and
+// to IsCompressedFormat but forgotten here therefore lands on { 1, 1 } and fails
+// TestPixelFormat's EveryCompressedFormatHasABlockExtentAboveOne, rather than quietly inheriting
+// 4x4 and being wrong only for the footprints that are not 4.
+struct BlockExtent
+{
+	uint32_t width;
+	uint32_t height;
+};
+
+inline BlockExtent GetBlockExtent( PixelFormat format )
+{
+	switch( format )
+	{
+	case PIXEL_FORMAT_BC1_TYPELESS:
+	case PIXEL_FORMAT_BC1_UNORM:
+	case PIXEL_FORMAT_BC1_UNORM_SRGB:
+	case PIXEL_FORMAT_BC2_TYPELESS:
+	case PIXEL_FORMAT_BC2_UNORM:
+	case PIXEL_FORMAT_BC2_UNORM_SRGB:
+	case PIXEL_FORMAT_BC3_TYPELESS:
+	case PIXEL_FORMAT_BC3_UNORM:
+	case PIXEL_FORMAT_BC3_UNORM_SRGB:
+	case PIXEL_FORMAT_BC4_TYPELESS:
+	case PIXEL_FORMAT_BC4_UNORM:
+	case PIXEL_FORMAT_BC4_SNORM:
+	case PIXEL_FORMAT_BC5_TYPELESS:
+	case PIXEL_FORMAT_BC5_UNORM:
+	case PIXEL_FORMAT_BC5_SNORM:
+	case PIXEL_FORMAT_BC6H_TYPELESS:
+	case PIXEL_FORMAT_BC6H_UF16:
+	case PIXEL_FORMAT_BC6H_SF16:
+	case PIXEL_FORMAT_BC7_TYPELESS:
+	case PIXEL_FORMAT_BC7_UNORM:
+	case PIXEL_FORMAT_BC7_UNORM_SRGB:
+	case PIXEL_FORMAT_ASTC_4x4_UNORM:
+	case PIXEL_FORMAT_ASTC_4x4_UNORM_SRGB:
+		return { 4, 4 };
+
+	case PIXEL_FORMAT_ASTC_6x6_UNORM:
+	case PIXEL_FORMAT_ASTC_6x6_UNORM_SRGB:
+		return { 6, 6 };
+
+	case PIXEL_FORMAT_ASTC_8x8_UNORM:
+	case PIXEL_FORMAT_ASTC_8x8_UNORM_SRGB:
+		return { 8, 8 };
+
+	default:
+		// Not a block image: one texel per "block", so the generic pitch expression is an
+		// identity.
+		return { 1, 1 };
+	};
+}
+
+// Square for every format carried today. Returned as a pair anyway, because ASTC itself is not
+// limited to square footprints -- 8x5, 10x6 and others exist in the specification -- and a caller
+// written against a single number would have to be found again if one is ever added.
+inline uint32_t GetBlockWidth( PixelFormat format )
+{
+	return GetBlockExtent( format ).width;
+}
+
+inline uint32_t GetBlockHeight( PixelFormat format )
+{
+	return GetBlockExtent( format ).height;
+}
+
+// Blocks needed to cover `texels` along one axis, rounding up. The rounding is not a nicety: an
+// image is only a whole number of blocks when its size is a multiple of the footprint, and a 6x6
+// mip chain stops being one almost immediately. A partial block is still a whole block in memory.
+inline uint32_t GetBlockCount( uint32_t texels, uint32_t blockExtent )
+{
+	if( blockExtent == 0 )
+	{
+		return 0;
+	}
+	return ( texels + blockExtent - 1 ) / blockExtent;
+}
+
 inline unsigned GetBytesPerPixel( PixelFormat format )
 {
 	switch( format )

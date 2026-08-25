@@ -15,6 +15,7 @@ ccp_add_executable(ImageIOTest
         TestHostBitmap.cpp
         TestJpgHandler.cpp
         TestPngHandler.cpp
+        TestPixelFormat.cpp
         TestPsdHandler.cpp
         TestTgaHandler.cpp
         )
