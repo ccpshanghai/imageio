@@ -223,6 +223,30 @@ inline uint32_t GetBlockByteSize( PixelFormat format )
 	};
 }
 
+// True for the ASTC block formats specifically, as opposed to block-compressed in general.
+//
+// Needed because the two families do not share every convention. ASTC arrived with the ability
+// to have a footprint other than 4x4 and with no requirement that an image be a whole number of
+// blocks -- the last one may be partial, and the encoder pads it. BC allows the same thing, but
+// this library has always rejected non-multiple-of-4 BC sizes and callers have relied on that;
+// ASTC does not inherit the convention because nothing has relied on it yet.
+inline bool IsAstcFormat( PixelFormat format )
+{
+	switch( format )
+	{
+	case PIXEL_FORMAT_ASTC_4x4_UNORM:
+	case PIXEL_FORMAT_ASTC_4x4_UNORM_SRGB:
+	case PIXEL_FORMAT_ASTC_6x6_UNORM:
+	case PIXEL_FORMAT_ASTC_6x6_UNORM_SRGB:
+	case PIXEL_FORMAT_ASTC_8x8_UNORM:
+	case PIXEL_FORMAT_ASTC_8x8_UNORM_SRGB:
+		return true;
+
+	default:
+		return false;
+	};
+}
+
 // The block's footprint in texels: how many texels wide and tall one compressed block covers.
 //
 // This is the half of a block format's geometry that GetBlockByteSize does not carry, and it did

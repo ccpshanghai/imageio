@@ -163,3 +163,25 @@ TEST( BitmapDimensionsBlockGeometry, AnUncompressedFormatStillCountsTexelRows )
 	EXPECT_EQ( 12u, rgba.GetMipNumRows( 0 ) );
 	EXPECT_EQ( 5u * 12u * 4u, rgba.GetMipSize( 0 ) );
 }
+
+
+TEST( PixelFormat, IsAstcFormatSeparatesTheTwoBlockFamilies )
+{
+	// The two families are both "compressed" and do not share every convention, which is why this
+	// predicate exists rather than callers testing the footprint. A BC format whose footprint
+	// happens to be 4x4 and an ASTC format whose footprint happens to be 4x4 are not the same
+	// thing, and keying on the number would have made ASTC 4x4 inherit BC's size restriction.
+	for( PixelFormat format : { PIXEL_FORMAT_ASTC_4x4_UNORM, PIXEL_FORMAT_ASTC_4x4_UNORM_SRGB,
+			 PIXEL_FORMAT_ASTC_6x6_UNORM, PIXEL_FORMAT_ASTC_6x6_UNORM_SRGB,
+			 PIXEL_FORMAT_ASTC_8x8_UNORM, PIXEL_FORMAT_ASTC_8x8_UNORM_SRGB } )
+	{
+		EXPECT_TRUE( IsAstcFormat( format ) ) << "format " << int( format );
+		EXPECT_TRUE( IsCompressedFormat( format ) ) << "every ASTC format is compressed";
+	}
+
+	for( PixelFormat format : { PIXEL_FORMAT_BC1_UNORM, PIXEL_FORMAT_BC7_UNORM_SRGB,
+			 PIXEL_FORMAT_B8G8R8A8_UNORM, PIXEL_FORMAT_UNKNOWN } )
+	{
+		EXPECT_FALSE( IsAstcFormat( format ) ) << "format " << int( format );
+	}
+}
