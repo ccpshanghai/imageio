@@ -57,8 +57,8 @@ struct BitmapDimensions
 
 	uint32_t GetArraySize() const;
 
-	// Number of rows to copy in a mip. For non-compressed formats this is the same as GetMipHeight.
-	// For compressed formats it's that number / 4.
+	// Number of rows to copy in a mip: texel rows for an uncompressed format, BLOCK rows for a
+	// compressed one -- GetMipHeight divided by the block height, rounded up.
 	uint32_t GetMipNumRows( uint32_t level ) const;
 
 	TextureType GetType() const;
@@ -203,7 +203,16 @@ inline uint32_t BitmapDimensions::GetMipWidth( uint32_t level ) const
 
 	if( IsCompressed() )
 	{
-		return std::max( ( ( m_width >> level ) + 3u ) & ~3u, 4u );
+		// Rounded up to a whole block, and the block is the format's, not four.
+		//
+		// `(x + 3) & ~3` with a floor of 4 was 4x4 written as arithmetic. It is exactly
+		// ceil(x/4)*4, so for every BC format this expression is the same number it always
+		// was -- but for ASTC 6x6 it turned a 6-texel mip into 8, which GetMipSize below
+		// then charged two blocks for instead of one, and the KTX2 handler's byte-length
+		// check rejected the file. A power-of-two chain hides it: 6 only appears when the
+		// base is not a power of two.
+		const uint32_t block = GetBlockWidth( m_format );
+		return std::max( GetBlockCount( m_width >> level, block ) * block, block );
 	}
 
 	return std::max( m_width >> level, 1u );
@@ -218,7 +227,16 @@ inline uint32_t BitmapDimensions::GetMipHeight( uint32_t level ) const
 
 	if( IsCompressed() )
 	{
-		return std::max( ( ( m_height >> level ) + 3u ) & ~3u, 4u );
+		// Rounded up to a whole block, and the block is the format's, not four.
+		//
+		// `(x + 3) & ~3` with a floor of 4 was 4x4 written as arithmetic. It is exactly
+		// ceil(x/4)*4, so for every BC format this expression is the same number it always
+		// was -- but for ASTC 6x6 it turned a 6-texel mip into 8, which GetMipSize below
+		// then charged two blocks for instead of one, and the KTX2 handler's byte-length
+		// check rejected the file. A power-of-two chain hides it: 6 only appears when the
+		// base is not a power of two.
+		const uint32_t block = GetBlockHeight( m_format );
+		return std::max( GetBlockCount( m_height >> level, block ) * block, block );
 	}
 
 	return std::max( m_height >> level, 1u );
@@ -246,9 +264,17 @@ inline uint32_t BitmapDimensions::GetMipPitch( uint32_t level ) const
 		return 0;
 	}
 
+	// GetBlockCount rather than `/ 4u`, for two reasons that used to be one expression.
+	//
+	// The block is not always 4 wide: ASTC 6x6 and 8x8 exist now, and `width / 4` overstates
+	// their block count by 1.5x and 2x. And the division truncated, so a compressed mip whose
+	// width is not a whole number of blocks lost its last one -- every mip chain ends at 1x1,
+	// where this returned a pitch of ZERO for every BC format. A partial block is still a whole
+	// block in memory.
 	if( IsCompressed() )
 	{
-		return GetMipWidth( level ) / 4u * GetBlockByteSize( m_format );
+		return GetBlockCount( GetMipWidth( level ), GetBlockWidth( m_format ) )
+			* GetBlockByteSize( m_format );
 	}
 
 	return GetMipWidth( level ) * GetBytesPerPixel( m_format );
@@ -256,9 +282,16 @@ inline uint32_t BitmapDimensions::GetMipPitch( uint32_t level ) const
 
 inline uint32_t BitmapDimensions::GetMipSize( uint32_t level ) const
 {
+	// Blocks in each axis, multiplied. The old form was
+	//     width * height * depth / 16 * blockByteSize
+	// where the 16 was 4x4 written as one number -- wrong for any other footprint -- and where
+	// dividing before multiplying threw away everything below a whole 16 texels: a 2x2 BC1 mip
+	// came out as size 0, and so did the tail of every mip chain.
 	if( IsCompressed() )
 	{
-		return GetMipWidth( level ) * GetMipHeight( level ) * GetMipDepth( level ) / 16 * GetBlockByteSize( m_format );
+		return GetBlockCount( GetMipWidth( level ), GetBlockWidth( m_format ) )
+			* GetBlockCount( GetMipHeight( level ), GetBlockHeight( m_format ) )
+			* GetMipDepth( level ) * GetBlockByteSize( m_format );
 	}
 
 	return GetMipWidth( level ) * GetMipHeight( level ) * GetMipDepth( level ) * GetBytesPerPixel( m_format );
@@ -271,7 +304,9 @@ inline uint32_t BitmapDimensions::GetArraySize() const
 
 inline uint32_t BitmapDimensions::GetMipNumRows( uint32_t level ) const
 {
-	return IsCompressed() ? GetMipHeight( level ) / 4 : GetMipHeight( level );
+	// No branch: GetBlockHeight is 1 for an uncompressed format, so this is GetMipHeight there
+	// by construction rather than by a second code path that has to be kept in step.
+	return GetBlockCount( GetMipHeight( level ), GetBlockHeight( m_format ) );
 }
 
 inline TextureType BitmapDimensions::GetType() const
