@@ -7,6 +7,7 @@
 #include "Tr2PngHandler.h"
 #include "Tr2DdsHandler.h"
 #include "Tr2JpgHandler.h"
+#include "Tr2KtxHandler.h"
 #include "Tr2TgaHandler.h"
 #include "Tr2BmpHandler.h"
 #include "PsdHandler.h"
@@ -33,6 +34,7 @@ void RegisterImageIOHandlers()
 		ImageIO::Bmp::RegisterHandler();
 		ImageIO::Dds::RegisterHandler();
 		ImageIO::Jpeg::RegisterHandler();
+		ImageIO::Ktx::RegisterHandler();
 		ImageIO::Png::RegisterHandler();
 		ImageIO::Psd::RegisterHandler();
 		ImageIO::Tga::RegisterHandler();
