@@ -13,6 +13,7 @@ ccp_add_executable(ImageIOTest
         TestHelpers.cpp
         TestHelpers.h
         TestHostBitmap.cpp
+        TestImageIOResult.cpp
         TestJpgHandler.cpp
         TestKtxHandler.cpp
         TestPngHandler.cpp
