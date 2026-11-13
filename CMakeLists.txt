@@ -20,6 +20,7 @@ ccp_add_library(CcpImageIO STATIC
         Tr2BmpHandler.cpp
         Tr2DdsHandler.cpp
         Tr2ImageHandler.cpp
+        Tr2KtxHandler.cpp
         Tr2JpgHandler.cpp
         Tr2PngHandler.cpp
         Tr2TgaHandler.cpp
@@ -40,6 +41,7 @@ set(PUBLIC_HEADER_FILES
     include/Tr2BmpHandler.h
     include/Tr2DdsHandler.h
     include/Tr2ImageHandler.h
+    include/Tr2KtxHandler.h
     include/Tr2JpgHandler.h
     include/Tr2PngHandler.h
     include/Tr2TgaHandler.h

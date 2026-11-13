@@ -78,7 +78,19 @@ bool HostBitmap::Create( unsigned width, unsigned height, unsigned mipCount, Pix
 		return false;
 	}
 
-	if( IsCompressedFormat( format ) )
+	// A whole number of 4x4 blocks, for BC.
+	//
+	// This is a convention this library chose, not a requirement of the formats: BC pads its last
+	// partial block exactly as ASTC does. It stays for BC because callers have relied on the
+	// rejection for a decade and there is nothing to gain from loosening it here.
+	//
+	// ASTC does not inherit it, and stating the rule "correctly" for ASTC would be worse than
+	// dropping it: a 6x6 block makes the test `% 6`, and 256 -- the size the textures in this
+	// pipeline actually are -- is not a multiple of 6. Any ASTC image of any size is a whole
+	// number of blocks once the last one may be partial, which GetMipPitch and GetMipSize now
+	// round up for. Keyed on IsAstcFormat rather than on the footprint being 4, so that ASTC 4x4
+	// is exempt for the same reason 6x6 is instead of accidentally keeping BC's rule.
+	if( IsCompressedFormat( format ) && !IsAstcFormat( format ) )
 	{
 		if( ( width % 4 ) != 0 || ( height % 4 ) != 0 )
 		{
@@ -119,7 +131,19 @@ bool HostBitmap::Create2DArray( unsigned width, unsigned height, unsigned mipCou
 		return false;
 	}
 
-	if( IsCompressedFormat( format ) )
+	// A whole number of 4x4 blocks, for BC.
+	//
+	// This is a convention this library chose, not a requirement of the formats: BC pads its last
+	// partial block exactly as ASTC does. It stays for BC because callers have relied on the
+	// rejection for a decade and there is nothing to gain from loosening it here.
+	//
+	// ASTC does not inherit it, and stating the rule "correctly" for ASTC would be worse than
+	// dropping it: a 6x6 block makes the test `% 6`, and 256 -- the size the textures in this
+	// pipeline actually are -- is not a multiple of 6. Any ASTC image of any size is a whole
+	// number of blocks once the last one may be partial, which GetMipPitch and GetMipSize now
+	// round up for. Keyed on IsAstcFormat rather than on the footprint being 4, so that ASTC 4x4
+	// is exempt for the same reason 6x6 is instead of accidentally keeping BC's rule.
+	if( IsCompressedFormat( format ) && !IsAstcFormat( format ) )
 	{
 		if( ( width % 4 ) != 0 || ( height % 4 ) != 0 )
 		{
