@@ -8,32 +8,28 @@
 namespace
 {
 
+// The whole allocation: every level's GetMipSize, times the array size.
+//
+// This used to be its own arithmetic -- 4x4 blocks for every compressed format, written as
+// `(x + 3) & ~3` with a floor of 4 and a `/ 16` -- while GetMipRawData placed the levels with a
+// third rule (`GetMipHeight / 4` block rows) and the KTX2 handler read GetMipSize bytes into each
+// level. Once GetMipHeight rounded to the format's own block, the three disagreed for ASTC 6x6 and
+// 8x8: an 8x8 6x6 image with 4 levels got 112 bytes, GetMipRawData put level 2 at byte 112 and
+// the KTX2 reader wrote levels 2 and 3 past the end of the buffer. Summing GetMipSize makes the
+// allocation and the level offsets one rule.
+//
+// For every BC and uncompressed format this is the number the old form gave: GetMipWidth/Height
+// of a BC format are ceil(x/4)*4 with a floor of 4, which is the old rounding, so GetMipSize's
+// block counts times GetBlockByteSize equal the old `w4 * h4 * depth * blockBytes / 16` (w4 * h4
+// is a multiple of 16, so that division never truncated); uncompressed levels are
+// max(x >> level, 1) either way, and GetMipDepth is the old per-level depth (1 unless 3D).
 size_t GetDataSize( const ImageIO::BitmapDimensions& dim )
 {
-	uint32_t mipCount = dim.GetTrueMipCount();
-	uint32_t width = dim.GetWidth();
-	uint32_t height = dim.GetHeight();
-	uint32_t depth = dim.GetType() == ImageIO::TEX_TYPE_3D ? dim.GetDepth() : 1;
+	const uint32_t mipCount = dim.GetTrueMipCount();
 	size_t size = 0;
-	if( IsCompressedFormat( dim.GetFormat() ) )
+	for( uint32_t level = 0; level != mipCount; ++level )
 	{
-		while( mipCount-- )
-		{
-			size += std::max( ( width + 3u ) & ~3u, 4u ) * std::max( ( height + 3u ) & ~3u, 4u ) * depth * GetBlockByteSize( dim.GetFormat() ) / 16;
-			width  = std::max( width  / 2u, 1u );
-			height = std::max( height / 2u, 1u );
-			depth = std::max( depth / 2u, 1u );			
-		}
-	}
-	else
-	{
-		while( mipCount-- )
-		{
-			size += width * height * depth * GetBytesPerPixel( dim.GetFormat() );
-			width  = std::max( width  / 2u, 1u );
-			height = std::max( height / 2u, 1u );			
-			depth = std::max( depth / 2u, 1u );			
-		}		
+		size += dim.GetMipSize( level );
 	}
 	size *= dim.GetArraySize();
 	return size;
@@ -468,25 +464,22 @@ const char* HostBitmap::GetMipRawData( unsigned level, uint32_t arrayIndex ) con
 	{
 		return nullptr;
 	}
-	unsigned offset = 0;
-	if( IsCompressedFormat( m_format ) )
+	// Every earlier level's GetMipSize -- GetMipNumRows * GetMipPitch * GetMipDepth, block rows
+	// for a compressed format and texel rows otherwise -- the same per-level size GetDataSize
+	// allocates. The compressed branch this replaces counted `GetMipHeight( i ) / 4` block rows:
+	// right for BC (GetMipHeight is ceil(h/4)*4 there, so / 4 is GetMipNumRows), but up to 1.5x
+	// too many for ASTC 6x6 and 2x for 8x8, which put later levels past the end of the allocation.
+	// The depth is GetMipDepth's: the old m_volumeDepth >> i for a volume, 1 for anything else.
+	size_t offset = 0;
+	for( unsigned i = 0; i != level; ++i )
 	{
-		for( unsigned i = 0; i != level; ++i )
-		{
-			offset += GetMipHeight( i ) / 4 * GetMipPitch( i ) * ( std::max( m_volumeDepth >> i, 1u ) );
-		}
-	}
-	else
-	{
-		for( unsigned i = 0; i != level; ++i )
-		{
-			offset += GetMipHeight( i ) * GetMipPitch( i ) * ( std::max( m_volumeDepth >> i, 1u ) );
-		}
+		offset += GetMipSize( i );
 	}
 
 	if( arrayIndex > 0 )
 	{
-		unsigned faceSize = (unsigned int)( m_data.size() / GetArraySize() ); // is it safe to assume this?
+		// GetDataSize is the per-element size times GetArraySize, so this division is exact.
+		const size_t faceSize = m_data.size() / GetArraySize();
 		offset += faceSize * arrayIndex;
 	}
 
@@ -504,12 +497,11 @@ unsigned HostBitmap::GetPitch() const
 	{
 		return 0;
 	}
-	if( IsCompressed() )
-	{
-		return m_width * GetBlockByteSize( m_format ) / 4;
-	}
-
-	return m_width * GetBytesPerPixel( m_format );
+	// Level 0's row pitch: texel rows for an uncompressed format, BLOCK rows for a compressed one.
+	// The compressed form was `m_width * blockBytes / 4`, a 4-texel block written as arithmetic:
+	// 1.5x and 2x too wide for ASTC 6x6 and 8x8, and truncated for a BC width that is not a
+	// multiple of 4. GetMipPitch counts whole blocks of the format's own width.
+	return GetMipPitch( 0 );
 }
 
 const char* HostBitmap::GetRawData() const
@@ -537,12 +529,17 @@ char* HostBitmap::GetRawData( unsigned x, unsigned y )
 	CCP_ASSERT( x < m_width );
 	CCP_ASSERT( y < m_height );
 
+	// (x, y) are texels. For a compressed format the address is the block that holds the texel:
+	// GetPitch is a block-row pitch, so the row is y / blockHeight. This used to be
+	// `y * GetPitch() + x * blockBytes / 4`, texel rows times a block-row pitch (4x too far down
+	// for BC, worse for ASTC 6x6 and 8x8), and x in 4-texel blocks.
 	if( IsCompressed() )
 	{
-		return m_data.get() + y * GetPitch() + x * GetBlockByteSize( m_format ) / 4;
+		return m_data.get() + size_t( y / GetBlockHeight( m_format ) ) * GetPitch()
+			+ size_t( x / GetBlockWidth( m_format ) ) * GetBlockByteSize( m_format );
 	}
 
-	return m_data.get() + y * GetPitch() + x * GetBytesPerPixel( m_format );
+	return m_data.get() + size_t( y ) * GetPitch() + size_t( x ) * GetBytesPerPixel( m_format );
 }
 
 size_t HostBitmap::GetRawDataSize() const

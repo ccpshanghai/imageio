@@ -144,6 +144,11 @@ TEST( KtxHandler, AMipChainSurvivesTheSmallestFirstOrdering )
 	// reason.
 	AssertRoundTrips( PIXEL_FORMAT_ASTC_4x4_UNORM, 32, 32, 6 );
 	AssertRoundTrips( PIXEL_FORMAT_ASTC_6x6_UNORM, 64, 64, 4 );
+	// An 8x8 6x6 chain of 4 levels: HostBitmap's level offsets counted 4-texel block rows, so
+	// levels 2 and 3 were read past the end of the 112-byte bitmap (an ASan report, not a
+	// mismatch here: the write and the read-back were wrong the same way).
+	AssertRoundTrips( PIXEL_FORMAT_ASTC_6x6_UNORM_SRGB, 8, 8, 4 );
+	AssertRoundTrips( PIXEL_FORMAT_ASTC_8x8_UNORM, 16, 16, 5 );
 }
 
 TEST( KtxHandler, RefusesSupercompressionByName )

@@ -3,6 +3,9 @@
 #include "StdAfx.h"
 #include "ImageIOResult.h"
 
+#include <cstdarg>
+#include <cstdio>
+
 namespace
 {
 
@@ -44,6 +47,28 @@ std::string GetResultErrorMessage( ImageIO::Result::Code code )
 	}
 }
 
+// printf-style formatting into a std::string.
+//
+// `args` is read twice -- once to measure, once to write -- so the measuring pass reads a copy:
+// reusing one va_list after a v*printf call is undefined, and on x86-64 Linux the second pass read
+// whatever followed the arguments (the KTX2 handler's messages came out garbled). The text also no
+// longer goes through a CCP_NEW buffer, which unique_ptr<char[]> released with plain delete[].
+std::string FormatText( const char* format, va_list args )
+{
+	va_list measure;
+	va_copy( measure, args );
+	const int length = vsnprintf( nullptr, 0, format, measure );
+	va_end( measure );
+	if( length <= 0 )
+	{
+		return std::string();
+	}
+	std::string text( size_t( length ) + 1, '\0' );
+	vsnprintf( &text[0], text.size(), format, args );
+	text.resize( size_t( length ) );
+	return text;
+}
+
 }
 
 ImageIO::Result::Result( Code code_, const char* format, ... )
@@ -52,21 +77,15 @@ ImageIO::Result::Result( Code code_, const char* format, ... )
 
 	va_list args;
 	va_start( args, format );
-	size_t size = size_t( _vscprintf( format, args ) );
-	std::unique_ptr<char[]> buffer( CCP_NEW( "ImageIO::Result::buffer" ) char[size + 1] );
-	vsprintf_s( buffer.get(), size + 1, format, args );
-	message = buffer.get();
+	message = FormatText( format, args );
+	va_end( args );
 }
 
 ImageIO::Result ImageIO::Result::FormatVAList( Code code, const char* format, va_list args )
 {
-	size_t size = size_t( _vscprintf( format, args ) );
-	std::unique_ptr<char[]> buffer( CCP_NEW( "ImageIO::Result::buffer" ) char[size + 1] );
-	vsprintf_s( buffer.get(), size + 1, format, args );
-
 	Result result;
 	result.code = code;
-	result.message = buffer.get();
+	result.message = FormatText( format, args );
 	return result;
 }
 

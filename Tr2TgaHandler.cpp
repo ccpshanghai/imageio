@@ -274,92 +274,84 @@ ImageIO::Result ReadRawData( ICcpStream& stream, const Header& header, unsigned 
 // --------------------------------------------------------------------------------------
 ImageIO::Result ReadRLEData( ICcpStream& stream, const Header& header, unsigned char* palette, ImageIO::HostBitmap& bitmap )
 {
-	size_t size = stream.GetSize() - stream.GetPosition();
-	uint8_t* compressedData = new uint8_t[size];
-	ON_BLOCK_EXIT( [&] { delete[] compressedData; } );
-	if( !compressedData )
+	// Bytes per pixel in the stream and in the bitmap. The stream holds header.bpp bits a pixel --
+	// for a palette image that is the index, one byte. This used to take colorMapBpp for a palette
+	// image, the palette entry's 3 bytes, and stepped through the indexes 3 at a time.
+	const size_t sourcePixelSize = header.bpp / 8;
+	const size_t pixelSize = GetBytesPerPixel( GetFormat( header ) );
+	if( palette ? sourcePixelSize != 1 : !( sourcePixelSize == pixelSize || ( sourcePixelSize == 3 && pixelSize == 4 ) ) )
 	{
-		return ImageIO::Result::OUT_OF_MEMORY;
+		return ImageIO::Result::HEADER_NOT_SUPPORTED;
 	}
 
-	if( stream.Read( compressedData, size ) != ptrdiff_t( size ) )
+	const ptrdiff_t remaining = stream.GetSize() - stream.GetPosition();
+	if( remaining <= 0 )
+	{
+		return ImageIO::Result::INVALID_DATA;
+	}
+	const size_t size = size_t( remaining );
+	std::unique_ptr<uint8_t[]> compressedData( new uint8_t[size] );
+	if( stream.Read( compressedData.get(), ptrdiff_t( size ) ) != ptrdiff_t( size ) )
 	{
 		return ImageIO::Result::READ_FAILURE;
 	}
 
-	uint8_t* current = compressedData;
-	unsigned index = 0;
-	unsigned pixelSize = GetBytesPerPixel( GetFormat( header ) );
-	unsigned inputPixelSize = ( header.colorMapType == COLOR_TYPE_INDEXED ? header.colorMapBpp : header.bpp ) / 8;
-	unsigned outputSize = bitmap.GetMipSize( 0 );
+	// Every packet is checked against both ends before it is touched: its header against the
+	// data, its source pixels against the data, its pixel count against the bitmap. The old loop
+	// compared after reading (`> size`, so the byte at `size` was read), decoded 4 bytes from a
+	// 3-byte source pixel, wrote a run of any length past the bitmap, and wrote byte [3] of a
+	// 1-byte greyscale pixel.
+	const uint8_t* current = compressedData.get();
+	const uint8_t* const end = current + size;
+	uint8_t* const output = reinterpret_cast<uint8_t*>( bitmap.GetRawData() );
+	const size_t outputSize = bitmap.GetMipSize( 0 );
+	size_t index = 0;
 
-	auto Decode = [&]( uint8_t* destination, const uint8_t* source, unsigned bpp )
+	auto Decode = [&]( uint8_t* destination, const uint8_t* source )
 	{
 		if( palette )
 		{
-			unsigned paletteIndex = *source * 3;
+			// PALETTE_SIZE is 256 entries, so any index byte is inside it.
+			const unsigned paletteIndex = *source * 3u;
 			destination[0] = palette[paletteIndex];
 			destination[1] = palette[paletteIndex + 1];
 			destination[2] = palette[paletteIndex + 2];
-			if( inputPixelSize != 4 )
-			{
-				destination[3] = 255;
-			}
+			destination[3] = 255;
 		}
 		else
 		{
-			memcpy( destination, source, bpp );
-			if( inputPixelSize != 4 )
+			memcpy( destination, source, sourcePixelSize );
+			if( pixelSize == 4 && sourcePixelSize == 3 )
 			{
 				destination[3] = 255;
 			}
 		}
 	};
 
-	// Decode
-	while( index < outputSize ) 
+	while( index < outputSize )
 	{
-		if( *current & 0x80 ) // Run length chunk (High bit = 1)
+		if( current == end )
 		{
-			int length = *current - 127;
-			current++;
-			if( current - compressedData > ptrdiff_t( size ) )
-			{
-				return ImageIO::Result::INVALID_DATA;
-			}
-			// Repeat the next pixel length times
-			for( int loop=0; loop != length; ++loop )
-			{
-				Decode( reinterpret_cast<uint8_t*>( bitmap.GetRawData() ) + index, current, pixelSize );
-				index += pixelSize;
-			}
-
-			current += inputPixelSize; // Move to the next descriptor chunk
-			if( current - compressedData > ptrdiff_t( size ) )
-			{
-				return ImageIO::Result::INVALID_DATA;
-			}
+			return ImageIO::Result::INVALID_DATA;
 		}
-		else // Raw chunk
+		const uint8_t descriptor = *current++;
+		const bool isRun = ( descriptor & 0x80 ) != 0; // run: one pixel repeated; raw: count pixels
+		const size_t count = size_t( descriptor & 0x7f ) + 1;
+		if( count > ( outputSize - index ) / pixelSize )
 		{
-			int length = *current + 1;
-			current++;
-			if( current - compressedData > ptrdiff_t( size ) )
-			{
-				return ImageIO::Result::INVALID_DATA;
-			}
-			// Write the next length pixels directly
-			for( int loop = 0; loop != length; ++loop )
-			{
-				Decode( reinterpret_cast<uint8_t*>( bitmap.GetRawData() ) + index, current, pixelSize );
-				index += pixelSize;
-				current += inputPixelSize;
-				if( current - compressedData > ptrdiff_t( size ) )
-				{
-					return ImageIO::Result::INVALID_DATA;
-				}
-			}
+			return ImageIO::Result::INVALID_DATA;
 		}
+		const size_t sourceBytes = ( isRun ? 1 : count ) * sourcePixelSize;
+		if( sourceBytes > size_t( end - current ) )
+		{
+			return ImageIO::Result::INVALID_DATA;
+		}
+		for( size_t i = 0; i != count; ++i )
+		{
+			Decode( output + index, current + ( isRun ? 0 : i * sourcePixelSize ) );
+			index += pixelSize;
+		}
+		current += sourceBytes;
 	}
 
 	// Flip the image
@@ -454,7 +446,11 @@ ImageIO::Result ReadImage( ICcpStream& stream, const Header& header, ImageIO::Ho
 			uint8_t* end = row + ( width - 1 ) * bpp;
 			while( start < end )
 			{
+				// SwapPixels steps its own copies of the pointers; these did not move, so any
+				// right-to-left image wider than one pixel looped here forever.
 				SwapPixels( start, end, bpp );
+				start += bpp;
+				end -= bpp;
 			}
 			row += pitch;
 		}

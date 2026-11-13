@@ -8,3 +8,4 @@
 #include <cmath>
 #include <memory>
 #include <limits>
+#include <cstring>
