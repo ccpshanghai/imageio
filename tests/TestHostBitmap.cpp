@@ -227,6 +227,170 @@ TEST( HostBitmap, CanCreateVolumeBitmapWithFullMipChain )
 }
 
 
+// Level layout. GetDataSize (the allocation) and GetMipRawData (where each level starts) used to be
+// two more spellings of 4x4 blocks next to GetMipSize: `/ 16` in one and `GetMipHeight / 4` block
+// rows in the other. Once GetMipHeight rounded to the format's own block they disagreed for ASTC
+// 6x6 and 8x8, and an 8x8 6x6 chain of 4 levels put level 2 at the end of its 112-byte buffer --
+// the KTX2 reader then wrote levels 2 and 3 past it. Both are now sums of GetMipSize.
+namespace
+{
+
+// The two functions as they were, kept here to show that BC and uncompressed layouts did not move.
+size_t LegacyDataSize( const BitmapDimensions& dim )
+{
+	uint32_t mipCount = dim.GetTrueMipCount();
+	uint32_t width = dim.GetWidth();
+	uint32_t height = dim.GetHeight();
+	uint32_t depth = dim.GetType() == TEX_TYPE_3D ? dim.GetDepth() : 1;
+	size_t size = 0;
+	while( mipCount-- )
+	{
+		if( IsCompressedFormat( dim.GetFormat() ) )
+		{
+			size += std::max( ( width + 3u ) & ~3u, 4u ) * std::max( ( height + 3u ) & ~3u, 4u ) * depth * GetBlockByteSize( dim.GetFormat() ) / 16;
+		}
+		else
+		{
+			size += width * height * depth * GetBytesPerPixel( dim.GetFormat() );
+		}
+		width = std::max( width / 2u, 1u );
+		height = std::max( height / 2u, 1u );
+		depth = std::max( depth / 2u, 1u );
+	}
+	return size * dim.GetArraySize();
+}
+
+size_t LegacyMipOffset( const HostBitmap& bmp, unsigned level, uint32_t arrayIndex )
+{
+	size_t offset = 0;
+	for( unsigned i = 0; i != level; ++i )
+	{
+		const uint32_t rows = IsCompressedFormat( bmp.GetFormat() ) ? bmp.GetMipHeight( i ) / 4 : bmp.GetMipHeight( i );
+		offset += rows * bmp.GetMipPitch( i ) * std::max( bmp.GetDepth() >> i, 1u );
+	}
+	return offset + bmp.GetRawDataSize() / bmp.GetArraySize() * arrayIndex;
+}
+
+// Every level of every element starts where the previous one ends, and the last ends at the end of
+// the allocation.
+void ExpectLevelsTileTheAllocation( const HostBitmap& bmp, const char* what )
+{
+	ASSERT_TRUE( bmp.IsValid() ) << what;
+	size_t expected = 0;
+	for( uint32_t element = 0; element < bmp.GetArraySize(); ++element )
+	{
+		for( uint32_t level = 0; level < bmp.GetTrueMipCount(); ++level )
+		{
+			const size_t offset = size_t( bmp.GetMipRawData( level, element ) - bmp.GetRawData() );
+			EXPECT_EQ( expected, offset ) << what << ", element " << element << ", level " << level;
+			expected = offset + bmp.GetMipSize( level );
+			EXPECT_LE( expected, bmp.GetRawDataSize() ) << what << ", element " << element << ", level " << level;
+		}
+	}
+	EXPECT_EQ( bmp.GetRawDataSize(), expected ) << what;
+}
+
+}  // namespace
+
+TEST( HostBitmap, AnAstcSixBySixChainStaysInsideItsAllocation )
+{
+	// The file that found it: an 8x8 ASTC 6x6 texture with 4 levels, created the way the KTX2
+	// reader creates its bitmap. Every level is one or four 16-byte blocks: 64 + 16 + 16 + 16.
+	HostBitmap bmp;
+	ASSERT_TRUE( bmp.CreateFromBitmapDimensions(
+		BitmapDimensions( TEX_TYPE_2D, PIXEL_FORMAT_ASTC_6x6_UNORM_SRGB, 8, 8, 1, 4 ) ) );
+	EXPECT_EQ( 112u, bmp.GetRawDataSize() );
+	const size_t offsets[] = { 0, 64, 80, 96 };
+	for( uint32_t level = 0; level < 4; ++level )
+	{
+		EXPECT_EQ( offsets[level], size_t( bmp.GetMipRawData( level ) - bmp.GetRawData() ) ) << "level " << level;
+	}
+	ExpectLevelsTileTheAllocation( bmp, "8x8 6x6, 4 levels" );
+}
+
+TEST( HostBitmap, AstcLevelsTileTheAllocationAtEveryFootprint )
+{
+	const PixelFormat formats[] = { PIXEL_FORMAT_ASTC_4x4_UNORM, PIXEL_FORMAT_ASTC_4x4_UNORM_SRGB,
+		PIXEL_FORMAT_ASTC_6x6_UNORM, PIXEL_FORMAT_ASTC_6x6_UNORM_SRGB,
+		PIXEL_FORMAT_ASTC_8x8_UNORM, PIXEL_FORMAT_ASTC_8x8_UNORM_SRGB };
+	const uint32_t sizes[] = { 1, 2, 3, 5, 6, 7, 8, 12, 13, 24, 50, 64, 100, 256, 1000, 1024 };
+	for( PixelFormat format : formats )
+	{
+		for( uint32_t width : sizes )
+		{
+			for( uint32_t height : { width, std::max( width / 3u, 1u ) } )
+			{
+				for( uint32_t mipCount : { 1u, 4u, 0u } )
+				{
+					const std::string what = "format " + std::to_string( int( format ) ) + ", " + std::to_string( width ) +
+						"x" + std::to_string( height ) + ", " + std::to_string( mipCount ) + " mips";
+					HostBitmap bmp;
+					ASSERT_TRUE( bmp.Create( width, height, mipCount, format ) ) << what;
+					ExpectLevelsTileTheAllocation( bmp, what.c_str() );
+
+					HostBitmap array;
+					ASSERT_TRUE( array.Create2DArray( width, height, mipCount, 3, format ) ) << what;
+					ExpectLevelsTileTheAllocation( array, ( what + ", 3 elements" ).c_str() );
+				}
+			}
+		}
+	}
+}
+
+TEST( HostBitmap, BcAndUncompressedLayoutIsUnchanged )
+{
+	// Everything except ASTC 6x6 and 8x8 must have the allocation size and level offsets the old
+	// arithmetic gave: for a 4x4 block, GetMipHeight is ceil(h/4)*4 with a floor of 4, so
+	// `GetMipHeight / 4` was already GetMipNumRows, and the 4x4-rounded `/ 16` product was
+	// already GetMipSize.
+	const uint32_t compressedSizes[] = { 4, 8, 12, 20, 36, 64, 100, 256 };
+	const uint32_t uncompressedSizes[] = { 1, 3, 5, 17, 33, 64 };
+	for( int f = int( PIXEL_FORMAT_UNKNOWN ) + 1; f < int( PIXEL_FORMAT_SENTINEL ); ++f )
+	{
+		const PixelFormat format = PixelFormat( f );
+		const bool compressed = IsCompressedFormat( format );
+		if( compressed ? GetBlockWidth( format ) != 4 || GetBlockHeight( format ) != 4 : GetBytesPerPixel( format ) == 0 )
+		{
+			continue;
+		}
+		const std::vector<uint32_t> sizes = compressed
+			? std::vector<uint32_t>( std::begin( compressedSizes ), std::end( compressedSizes ) )
+			: std::vector<uint32_t>( std::begin( uncompressedSizes ), std::end( uncompressedSizes ) );
+		for( size_t i = 0; i < sizes.size(); ++i )
+		{
+			// Width and height differ, and both run through every size.
+			const uint32_t width = sizes[i];
+			const uint32_t height = sizes[( i + 1 ) % sizes.size()];
+			for( uint32_t mipCount : { 1u, 3u, 0u } )
+			{
+				const std::string what = "format " + std::to_string( f ) + ", " + std::to_string( width ) + "x" +
+					std::to_string( height ) + ", " + std::to_string( mipCount ) + " mips";
+				HostBitmap bitmaps[4];
+				ASSERT_TRUE( bitmaps[0].Create( width, height, mipCount, format ) ) << what;
+				ASSERT_TRUE( bitmaps[1].Create2DArray( width, height, mipCount, 3, format ) ) << what;
+				ASSERT_TRUE( bitmaps[2].CreateCube( width, mipCount, format ) ) << what;
+				ASSERT_TRUE( bitmaps[3].CreateVolume( width, height, 5, mipCount, format ) ) << what;
+				for( const HostBitmap& bmp : bitmaps )
+				{
+					const std::string kind = what + ", type " + std::to_string( int( bmp.GetType() ) ) + ", " +
+						std::to_string( bmp.GetArraySize() ) + " elements";
+					EXPECT_EQ( LegacyDataSize( bmp ), bmp.GetRawDataSize() ) << kind;
+					for( uint32_t element = 0; element < bmp.GetArraySize(); ++element )
+					{
+						for( uint32_t level = 0; level < bmp.GetTrueMipCount(); ++level )
+						{
+							EXPECT_EQ( LegacyMipOffset( bmp, level, element ), size_t( bmp.GetMipRawData( level, element ) - bmp.GetRawData() ) )
+								<< kind << ", element " << element << ", level " << level;
+						}
+					}
+					ExpectLevelsTileTheAllocation( bmp, kind.c_str() );
+				}
+			}
+		}
+	}
+}
+
+
 class PixelFormatTest: public ::testing::TestWithParam<int>
 {
 };
