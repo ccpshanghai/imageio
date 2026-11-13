@@ -400,9 +400,21 @@ TEST_P( PixelFormatTest, CanGetPitchForBitmap )
 	PixelFormat format = PixelFormat( GetParam() );
 	if( IsCompressedFormat( format ) )
 	{
+		// Whole blocks of the format's own width: 16 for a 4-wide block, 11 for 6, 8 for 8.
 		HostBitmap bmp;
 		ASSERT_TRUE( bmp.Create( 64, 8, 1, format ) );
-		EXPECT_EQ( GetBlockByteSize( format ) * 64 / 4, bmp.GetPitch() );
+		EXPECT_EQ( GetBlockCount( 64, GetBlockWidth( format ) ) * GetBlockByteSize( format ), bmp.GetPitch() );
+		EXPECT_EQ( bmp.GetMipPitch( 0 ), bmp.GetPitch() );
+
+		// ASTC takes any size (Create keeps BC to whole 4x4 blocks), and a partial last block is
+		// still a whole block in memory: 10 texels of 8x8 are 2 blocks, which `10 * 16 / 4` made 40
+		// bytes instead of 32, and 6 texels of 4x4 are 2 blocks, not 1.5.
+		if( IsAstcFormat( format ) )
+		{
+			HostBitmap narrow;
+			ASSERT_TRUE( narrow.Create( 10, 8, 1, format ) );
+			EXPECT_EQ( GetBlockCount( 10, GetBlockWidth( format ) ) * GetBlockByteSize( format ), narrow.GetPitch() );
+		}
 	}
 	else if( GetBytesPerPixel( format ) )
 	{
@@ -421,6 +433,29 @@ TEST_P( PixelFormatTest, GetPixelDataHasCorrectOffset )
 		ASSERT_TRUE( bmp.Create( 64, 8, 1, format ) );
 		EXPECT_EQ( bmp.GetPitch() * 2 + GetBytesPerPixel( format ), bmp.GetRawData( 1, 2 ) - bmp.GetRawData() );
 	}
+}
+
+TEST_P( PixelFormatTest, GetRawDataOfACompressedBitmapIsTheBlockHoldingTheTexel )
+{
+	PixelFormat format = PixelFormat( GetParam() );
+	if( !IsCompressedFormat( format ) )
+	{
+		return;
+	}
+	const uint32_t bw = GetBlockWidth( format );
+	const uint32_t bh = GetBlockHeight( format );
+	const size_t bytes = GetBlockByteSize( format );
+
+	HostBitmap bmp;
+	ASSERT_TRUE( bmp.Create( 64, 64, 1, format ) );
+	const char* base = bmp.GetRawData();
+	EXPECT_EQ( 0, bmp.GetRawData( bw - 1, bh - 1 ) - base );
+	EXPECT_EQ( ptrdiff_t( bytes ), bmp.GetRawData( bw, 0 ) - base );
+	EXPECT_EQ( ptrdiff_t( bmp.GetPitch() ), bmp.GetRawData( 0, bh ) - base );
+	EXPECT_EQ( ptrdiff_t( 2 * bmp.GetPitch() + 3 * bytes ), bmp.GetRawData( 3 * bw + 1, 2 * bh + 1 ) - base );
+
+	// The last texel's block is the allocation's last block.
+	EXPECT_EQ( ptrdiff_t( bmp.GetMipSize( 0 ) - bytes ), bmp.GetRawData( 63, 63 ) - base );
 }
 
 TEST( HostBitmap, PopulateMarginFailsForCompressedBitmap )

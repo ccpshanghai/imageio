@@ -497,12 +497,11 @@ unsigned HostBitmap::GetPitch() const
 	{
 		return 0;
 	}
-	if( IsCompressed() )
-	{
-		return m_width * GetBlockByteSize( m_format ) / 4;
-	}
-
-	return m_width * GetBytesPerPixel( m_format );
+	// Level 0's row pitch: texel rows for an uncompressed format, BLOCK rows for a compressed one.
+	// The compressed form was `m_width * blockBytes / 4`, a 4-texel block written as arithmetic:
+	// 1.5x and 2x too wide for ASTC 6x6 and 8x8, and truncated for a BC width that is not a
+	// multiple of 4. GetMipPitch counts whole blocks of the format's own width.
+	return GetMipPitch( 0 );
 }
 
 const char* HostBitmap::GetRawData() const
@@ -530,12 +529,17 @@ char* HostBitmap::GetRawData( unsigned x, unsigned y )
 	CCP_ASSERT( x < m_width );
 	CCP_ASSERT( y < m_height );
 
+	// (x, y) are texels. For a compressed format the address is the block that holds the texel:
+	// GetPitch is a block-row pitch, so the row is y / blockHeight. This used to be
+	// `y * GetPitch() + x * blockBytes / 4`, texel rows times a block-row pitch (4x too far down
+	// for BC, worse for ASTC 6x6 and 8x8), and x in 4-texel blocks.
 	if( IsCompressed() )
 	{
-		return m_data.get() + y * GetPitch() + x * GetBlockByteSize( m_format ) / 4;
+		return m_data.get() + size_t( y / GetBlockHeight( m_format ) ) * GetPitch()
+			+ size_t( x / GetBlockWidth( m_format ) ) * GetBlockByteSize( m_format );
 	}
 
-	return m_data.get() + y * GetPitch() + x * GetBytesPerPixel( m_format );
+	return m_data.get() + size_t( y ) * GetPitch() + size_t( x ) * GetBytesPerPixel( m_format );
 }
 
 size_t HostBitmap::GetRawDataSize() const
